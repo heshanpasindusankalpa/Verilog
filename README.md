@@ -1,4 +1,4 @@
-# Verilog
+#  FSM-based memory module 
 Design a simple FSM-based memory module in Verilog.
 
 You are required to design a small 16×8 memory system controlled by a finite state machine (FSM).
