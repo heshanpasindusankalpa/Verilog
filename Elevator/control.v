@@ -92,7 +92,7 @@ module control #(
             else CS = 2'b00; // idle
 
             // CurrentRequest at this floor:
-            reg CR_here;
+            reg CR_here;//Is there a request at this floor that matches our current direction?
             CR_here = cr(f_int, CS);
 
             // output CC
