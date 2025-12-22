@@ -2,8 +2,8 @@
 module elevator_body #(
     parameter N_FLOORS = 4,
     parameter FLOOR_BITS = $clog2(N_FLOORS),
-    parameter MOVE_CYCLES = 50,
-    parameter DOOR_CYCLES = 40
+    parameter MOVE_CYCLES = 5,
+    parameter DOOR_CYCLES = 4
 )(
     input  wire clk,
     input  wire rst_n,
