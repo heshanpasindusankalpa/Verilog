@@ -102,6 +102,3 @@ module control #(
         end
     end
 endmodule
-
-// elevator_body.v - UPDATED VERSION
-// Now out
