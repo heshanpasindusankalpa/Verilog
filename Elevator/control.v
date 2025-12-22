@@ -1,7 +1,3 @@
-// control.v
-// Implements CurrentState and CurrentCommand as in the paper.
-// Inputs: current floor, button state vectors (u_buttons, d_buttons, f_buttons).
-// Outputs: command (idle/up/down/serve) and clear pulses for flipflops when service completes.
 `timescale 1ns/1ps
 module control #(
     parameter N = 4,
@@ -13,106 +9,99 @@ module control #(
     input  wire [N-1:0] u_buttons,
     input  wire [N-1:0] d_buttons,
     input  wire [N-1:0] f_buttons,
-    input  wire served_pulse, // from body: one-cycle when serve finishes
+    input  wire served_pulse,      // high when serve completes
+    input  wire serve_completing,  // high one cycle before serve completes
     output reg  [1:0] command,
-    output reg  [N-1:0] clear_up,    // one-cycle pulses to reset flipflops
+    output reg  [N-1:0] clear_up,
     output reg  [N-1:0] clear_down,
     output reg  [N-1:0] clear_floor
 );
-    // Controller state memory (last state)
-    reg [1:0] last_state; // 00 idle, 01 up, 10 down
-    // helper wires
-    integer i;
-    function ur;
-        input integer f;
+    reg [1:0] state_reg;
+    integer f_int;
+    reg UR_w, DR_w, CR_here;
+    
+    // Use button states that account for buttons being cleared THIS cycle
+    reg [N-1:0] u_eff, d_eff, f_eff;
+
+    function ur(input integer f, input [N-1:0] ub, input [N-1:0] db, input [N-1:0] fb);
         integer j;
         begin
-            ur = 0;
-            // ub(f) OR any request above f
-            if (u_buttons[f] || f_buttons[f]) ur = 1;
-            for (j=f+1; j<N; j=j+1) begin
-                if (u_buttons[j] || d_buttons[j] || f_buttons[j]) ur = 1;
-            end
+            ur = (ub[f] || fb[f]);
+            for (j=f+1; j<N; j=j+1) if (ub[j] || db[j] || fb[j]) ur = 1;
         end
     endfunction
 
-    function dr;
-        input integer f;
+    function dr(input integer f, input [N-1:0] ub, input [N-1:0] db, input [N-1:0] fb);
         integer j;
         begin
-            dr = 0;
-            if (d_buttons[f] || f_buttons[f]) dr = 1;
-            for (j=0; j<f; j=j+1) begin
-                if (u_buttons[j] || d_buttons[j] || f_buttons[j]) dr = 1;
-            end
+            dr = (db[f] || fb[f]);
+            for (j=0; j<f; j=j+1) if (ub[j] || db[j] || fb[j]) dr = 1;
         end
     endfunction
 
-    function cr; // current request at this floor given assumed CS
-        input integer f;
-        input [1:0] cs;
-        begin
-            if (cs == 2'b10) // down
-                cr = (d_buttons[f] || f_buttons[f]);
-            else
-                cr = (u_buttons[f] || f_buttons[f]);
-        end
-    endfunction
+    // COMBINATIONAL BLOCK
+    always @(*) begin
+        f_int = cur_floor;
+        
+        // Account for buttons that will be cleared this cycle
+        u_eff = u_buttons;
+        d_eff = d_buttons;
+        f_eff = f_buttons;
+        
+        // If we're issuing clear pulses, remove those buttons from consideration
+        if (clear_up[f_int])   u_eff[f_int] = 1'b0;
+        if (clear_down[f_int]) d_eff[f_int] = 1'b0;
+        if (clear_floor[f_int]) f_eff[f_int] = 1'b0;
+        
+        UR_w = ur(f_int, u_eff, d_eff, f_eff);
+        DR_w = dr(f_int, u_eff, d_eff, f_eff);
 
-    // Synchronous update of control state and outputs
+        // Determine what to check at current floor
+        if (UR_w && (state_reg != 2'b10 || !DR_w)) 
+            CR_here = (u_eff[f_int] || f_eff[f_int]);
+        else
+            CR_here = (d_eff[f_int] || f_eff[f_int]);
+
+        // Command decision - don't serve if we just completed serving
+        if (CR_here && !served_pulse) begin
+            command = 2'b11; // Serve
+        end else if (UR_w && (state_reg != 2'b10 || !DR_w)) begin
+            command = 2'b01; // Up
+        end else if (DR_w) begin
+            command = 2'b10; // Down
+        end else begin
+            command = 2'b00; // Idle
+        end
+    end
+
+    // SEQUENTIAL BLOCK
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            last_state <= 2'b00; // idle
-            command <= 2'b00;
+            state_reg <= 2'b00;
             clear_up <= 0;
             clear_down <= 0;
             clear_floor <= 0;
         end else begin
-            // default clears are 0 (one-cycle pulses when service complete)
-            clear_up <= {N{1'b0}};
-            clear_down <= {N{1'b0}};
-            clear_floor <= {N{1'b0}};
+            // Update direction memory
+            if (command == 2'b01) state_reg <= 2'b01;
+            else if (command == 2'b10) state_reg <= 2'b10;
+            else if (command == 2'b00) state_reg <= 2'b00;
 
-            // compute UR/DR/CR per floor index
-            // convert cur_floor to int index
-            integer f_int;
-            f_int = cur_floor;
+            // Default: no clears
+            clear_up    <= 0;
+            clear_down  <= 0;
+            clear_floor <= 0;
 
-            // determine candidate CS (CurrentState)
-            reg UR_w, DR_w;
-            UR_w = ur(f_int);
-            DR_w = dr(f_int);
-
-            reg [1:0] CS;
-            // CurrentState rule from paper:
-            // up if UR AND (last != down OR not DR)
-            // down if (not UR and f>0) OR (DR and last=down)
-            if (UR_w && (last_state != 2'b10 || !DR_w)) CS = 2'b01; // up
-            else if ((!UR_w && f_int > 0) || (DR_w && last_state == 2'b10)) CS = 2'b10; // down
-            else CS = 2'b00; // idle
-
-            // CurrentRequest at this floor:
-            reg CR_here;//Is there a request at this floor that matches our current direction?
-            CR_here = cr(f_int, CS);
-
-            // output CC
-            if (CR_here) command <= 2'b11; // serve
-            else command <= CS;
-
-            // update last_state (latched)
-            last_state <= CS;
-
-            // when a serve completes (served_pulse), clear appropriate buttons at cur_floor
-            if (served_pulse) begin
-                // Clear f_button always
+            // Issue clear pulses one cycle BEFORE serve completes
+            // so buttons are cleared synchronously with served_pulse
+            if (serve_completing) begin
                 clear_floor[f_int] <= 1'b1;
-                // Clear up or down depending on direction when served (paper: ClearBoard resets external button with same dir)
-                if (CS == 2'b10) begin // down
-                    clear_down[f_int] <= 1'b1;
-                end else begin // up or idle treat as up direction for clearing external up
-                    clear_up[f_int] <= 1'b1;
-                end
+                if (state_reg == 2'b10) clear_down[f_int] <= 1'b1;
+                else                    clear_up[f_int]   <= 1'b1;
             end
         end
     end
 endmodule
+
+// elevator_body.v - UPDATED VERSION
+// Now out
